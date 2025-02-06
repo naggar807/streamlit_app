@@ -1,4 +1,9 @@
+"""
+In an environment with streamlit, plotly and duckdb installed,
+Run with `streamlit run streamlit_app.py`
+"""
 import random
+import duckdb
 import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
@@ -33,7 +38,7 @@ def load_data(path: str):
 
 
 df = load_data(uploaded_file)
-all_months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
+all_months = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"]
 
 with st.expander("Data Preview"):
     st.dataframe(
@@ -81,6 +86,7 @@ def plot_metric(label, value, prefix="", suffix="", show_graph=False, color_grap
     fig.update_xaxes(visible=False, fixedrange=True)
     fig.update_yaxes(visible=False, fixedrange=True)
     fig.update_layout(
+        # paper_bgcolor="lightgrey",
         margin=dict(t=30, b=0),
         showlegend=False,
         plot_bgcolor="white",
@@ -113,6 +119,7 @@ def plot_gauge(
         )
     )
     fig.update_layout(
+        # paper_bgcolor="lightgrey",
         height=200,
         margin=dict(l=10, r=10, t=50, b=10, pad=8),
     )
@@ -120,25 +127,39 @@ def plot_gauge(
 
 
 def plot_top_right():
-    # Filter data for the year 2023 and Account = 'Sales'
-    sales_data = df[(df["Year"] == 2023) & (df["Account"] == "Sales")]
+    sales_data = duckdb.sql(
+        f"""
+        WITH sales_data AS (
+            UNPIVOT ( 
+                SELECT 
+                    Scenario,
+                    business_unit,
+                    {','.join(all_months)} 
+                    FROM df 
+                    WHERE Year='2023' 
+                    AND Account='Sales' 
+                ) 
+            ON {','.join(all_months)}
+            INTO
+                NAME month
+                VALUE sales
+        ),
 
-    # Unpivot the months into a single column
-    sales_data = sales_data.melt(
-        id_vars=["Scenario", "business_unit"],
-        value_vars=all_months,
-        var_name="month",
-        value_name="sales",
-    )
+        aggregated_sales AS (
+            SELECT
+                Scenario,
+                business_unit,
+                SUM(sales) AS sales
+            FROM sales_data
+            GROUP BY Scenario, business_unit
+        )
+        
+        SELECT * FROM aggregated_sales
+        """
+    ).df()
 
-    # Aggregate sales by Scenario and business_unit
-    aggregated_sales = sales_data.groupby(["Scenario", "business_unit"], as_index=False)[
-        "sales"
-    ].sum()
-
-    # Plot the bar chart
     fig = px.bar(
-        aggregated_sales,
+        sales_data,
         x="business_unit",
         y="sales",
         color="Scenario",
@@ -154,20 +175,25 @@ def plot_top_right():
 
 
 def plot_bottom_left():
-    # Filter data for the year 2023, Account = 'Sales', and business_unit = 'Software'
-    sales_data = df[
-        (df["Year"] == 2023) & (df["Account"] == "Sales") & (df["business_unit"] == "Software")
-    ]
+    sales_data = duckdb.sql(
+        f"""
+        WITH sales_data AS (
+            SELECT 
+            Scenario,{','.join(all_months)} 
+            FROM df 
+            WHERE Year='2023' 
+            AND Account='Sales'
+            AND business_unit='Software'
+        )
 
-    # Unpivot the months into a single column
-    sales_data = sales_data.melt(
-        id_vars=["Scenario"],
-        value_vars=all_months,
-        var_name="month",
-        value_name="sales",
-    )
+        UNPIVOT sales_data 
+        ON {','.join(all_months)}
+        INTO
+            NAME month
+            VALUE sales
+    """
+    ).df()
 
-    # Plot the line chart
     fig = px.line(
         sales_data,
         x="month",
@@ -182,23 +208,37 @@ def plot_bottom_left():
 
 
 def plot_bottom_right():
-    # Filter data for Scenario = 'Actuals' and Account != 'Sales'
-    sales_data = df[(df["Scenario"] == "Actuals") & (df["Account"] != "Sales")]
+    sales_data = duckdb.sql(
+        f"""
+        WITH sales_data AS (
+            UNPIVOT ( 
+                SELECT 
+                    Account,Year,{','.join([f'ABS({month}) AS {month}' for month in all_months])}
+                    FROM df 
+                    WHERE Scenario='Actuals'
+                    AND Account!='Sales'
+                ) 
+            ON {','.join(all_months)}
+            INTO
+                NAME year
+                VALUE sales
+        ),
 
-    # Unpivot the months into a single column
-    sales_data = sales_data.melt(
-        id_vars=["Account", "Year"],
-        value_vars=all_months,
-        var_name="month",
-        value_name="sales",
-    )
+        aggregated_sales AS (
+            SELECT
+                Account,
+                Year,
+                SUM(sales) AS sales
+            FROM sales_data
+            GROUP BY Account, Year
+        )
+        
+        SELECT * FROM aggregated_sales
+    """
+    ).df()
 
-    # Aggregate sales by Account and Year
-    aggregated_sales = sales_data.groupby(["Account", "Year"], as_index=False)["sales"].sum()
-
-    # Plot the bar chart
     fig = px.bar(
-        aggregated_sales,
+        sales_data,
         x="Year",
         y="sales",
         color="Account",
@@ -242,7 +282,7 @@ with top_left_column:
     with column_3:
         plot_metric("Equity Ratio", 75.38, prefix="", suffix=" %", show_graph=False)
         plot_gauge(7, "#FF2B2B", " days", "Out Stock", 31)
-
+        
     with column_4:
         plot_metric("Debt Equity", 1.10, prefix="", suffix=" %", show_graph=False)
         plot_gauge(28, "#29B09D", " days", "Delay", 31)
